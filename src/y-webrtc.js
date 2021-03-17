@@ -71,7 +71,7 @@ const readMessage = (room, buf, syncedCallback) => {
   const doc = room.doc
   let sendReply = false
   switch (messageType) {
-    case messageSync:
+    case messageSync: {
       encoding.writeVarUint(encoder, messageSync)
       const syncMessageType = syncProtocol.readSyncMessage(decoder, encoder, doc, room)
       if (syncMessageType === syncProtocol.messageYjsSyncStep2 && !room.synced) {
@@ -81,6 +81,7 @@ const readMessage = (room, buf, syncedCallback) => {
         sendReply = true
       }
       break
+    }
     case messageQueryAwareness:
       encoding.writeVarUint(encoder, messageAwareness)
       encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, Array.from(awareness.getStates().keys())))
@@ -179,7 +180,7 @@ export class WebrtcConn {
     /**
      * @type {any}
      */
-    this.peer = new Peer({ initiator })
+    this.peer = new Peer({ initiator, ...room.provider.peerOpts })
     this.peer.on('signal', signal => {
       publishSignalingMessage(signalingConn, room, { to: remotePeerId, from: room.peerId, type: 'signal', signal })
     })
@@ -217,10 +218,11 @@ export class WebrtcConn {
       checkIsSynced(room)
       this.peer.destroy()
       log('closed connection to ', logging.BOLD, remotePeerId)
+      announceSignalingInfo(room)
     })
     this.peer.on('error', err => {
+      log('Error in connection to ', logging.BOLD, remotePeerId, ': ', err)
       announceSignalingInfo(room)
-      log('error in connection to ', logging.BOLD, remotePeerId, ': ', err)
     })
     this.peer.on('data', data => {
       const answer = readPeerMessage(this, data)
@@ -229,6 +231,7 @@ export class WebrtcConn {
       }
     })
   }
+
   destroy () {
     this.peer.destroy()
   }
@@ -270,13 +273,18 @@ const announceSignalingInfo = room => {
   })
 }
 
+/**
+ * @param {Room} room
+ */
 const broadcastBcPeerId = room => {
-  // broadcast peerId via broadcastchannel
-  const encoderPeerIdBc = encoding.createEncoder()
-  encoding.writeVarUint(encoderPeerIdBc, messageBcPeerId)
-  encoding.writeUint8(encoderPeerIdBc, 1)
-  encoding.writeVarString(encoderPeerIdBc, room.peerId)
-  broadcastBcMessage(room, encoding.toUint8Array(encoderPeerIdBc))
+  if (room.provider.filterBcConns) {
+    // broadcast peerId via broadcastchannel
+    const encoderPeerIdBc = encoding.createEncoder()
+    encoding.writeVarUint(encoderPeerIdBc, messageBcPeerId)
+    encoding.writeUint8(encoderPeerIdBc, 1)
+    encoding.writeVarString(encoderPeerIdBc, room.peerId)
+    broadcastBcMessage(room, encoding.toUint8Array(encoderPeerIdBc))
+  }
 }
 
 export class Room {
@@ -332,12 +340,10 @@ export class Room {
      * @param {any} origin
      */
     this._docUpdateHandler = (update, origin) => {
-      if (origin !== this) {
-        const encoder = encoding.createEncoder()
-        encoding.writeVarUint(encoder, messageSync)
-        syncProtocol.writeUpdate(encoder, update)
-        broadcastRoomMessage(this, encoding.toUint8Array(encoder))
-      }
+      const encoder = encoding.createEncoder()
+      encoding.writeVarUint(encoder, messageSync)
+      syncProtocol.writeUpdate(encoder, update)
+      broadcastRoomMessage(this, encoding.toUint8Array(encoder))
     }
     /**
      * Listens to Awareness updates and sends them to remote peers
@@ -347,13 +353,13 @@ export class Room {
      */
     this._awarenessUpdateHandler = ({ added, updated, removed }, origin) => {
       const changedClients = added.concat(updated).concat(removed)
-      const encoder = encoding.createEncoder()
-      encoding.writeVarUint(encoder, messageAwareness)
-      encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients))
-      broadcastRoomMessage(this, encoding.toUint8Array(encoder))
+      const encoderAwareness = encoding.createEncoder()
+      encoding.writeVarUint(encoderAwareness, messageAwareness)
+      encoding.writeVarUint8Array(encoderAwareness, awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients))
+      broadcastRoomMessage(this, encoding.toUint8Array(encoderAwareness))
     }
     this.doc.on('update', this._docUpdateHandler)
-    this.awareness.on('change', this._awarenessUpdateHandler)
+    this.awareness.on('update', this._awarenessUpdateHandler)
     window.addEventListener('beforeunload', () => {
       awarenessProtocol.removeAwarenessStates(this.awareness, [doc.clientID], 'window unload')
       rooms.forEach(room => {
@@ -361,6 +367,7 @@ export class Room {
       })
     })
   }
+
   connect () {
     // signal through all available signaling connections
     announceSignalingInfo(this)
@@ -389,6 +396,7 @@ export class Room {
     encoding.writeVarUint8Array(encoderAwarenessState, awarenessProtocol.encodeAwarenessUpdate(this.awareness, [this.doc.clientID]))
     broadcastBcMessage(this, encoding.toUint8Array(encoderAwarenessState))
   }
+
   disconnect () {
     // signal through all available signaling connections
     signalingConns.forEach(conn => {
@@ -407,9 +415,10 @@ export class Room {
     bc.unsubscribe(this.name, this._bcSubscriber)
     this.bcconnected = false
     this.doc.off('update', this._docUpdateHandler)
-    this.awareness.off('change', this._awarenessUpdateHandler)
+    this.awareness.off('update', this._awarenessUpdateHandler)
     this.webrtcConns.forEach(conn => conn.destroy())
   }
+
   destroy () {
     this.disconnect()
   }
@@ -525,20 +534,25 @@ export class WebrtcProvider extends Observable {
    * @param {string?} [opts.password]
    * @param {awarenessProtocol.Awareness} [opts.awareness]
    * @param {number} [opts.maxConns]
+   * @param {boolean} [opts.filterBcConns]
+   * @param {any} [opts.peerOpts]
    */
   constructor (
     roomName,
     doc,
     {
-      signaling = ['wss://signaling.yjs.dev', 'wss://y-webrtc-uchplqjsol.now.sh', 'wss://y-webrtc-signaling-eu.herokuapp.com', 'wss://y-webrtc-signaling-us.herokuapp.com'],
+      signaling = ['wss://signaling.yjs.dev', 'wss://y-webrtc-signaling-eu.herokuapp.com', 'wss://y-webrtc-signaling-us.herokuapp.com'],
       password = null,
       awareness = new awarenessProtocol.Awareness(doc),
-      maxConns = 20 + math.floor(random.rand() * 15) // just to prevent that exactly n clients form a cluster
+      maxConns = 20 + math.floor(random.rand() * 15), // the random factor reduces the chance that n clients form a cluster
+      filterBcConns = true,
+      peerOpts = {} // simple-peer options. See https://github.com/feross/simple-peer#peer--new-peeropts
     } = {}
   ) {
     super()
     this.roomName = roomName
     this.doc = doc
+    this.filterBcConns = filterBcConns
     /**
      * @type {awarenessProtocol.Awareness}
      */
@@ -547,6 +561,7 @@ export class WebrtcProvider extends Observable {
     this.signalingUrls = signaling
     this.signalingConns = []
     this.maxConns = maxConns
+    this.peerOpts = peerOpts
     /**
      * @type {PromiseLike<CryptoKey | null>}
      */
@@ -564,13 +579,17 @@ export class WebrtcProvider extends Observable {
       }
     })
     this.connect()
+    this.destroy = this.destroy.bind(this)
+    doc.on('destroy', this.destroy)
   }
+
   /**
    * @type {boolean}
    */
   get connected () {
     return this.room !== null && this.shouldConnect
   }
+
   connect () {
     this.shouldConnect = true
     this.signalingUrls.forEach(url => {
@@ -582,20 +601,23 @@ export class WebrtcProvider extends Observable {
       this.room.connect()
     }
   }
+
   disconnect () {
     this.shouldConnect = false
     this.signalingConns.forEach(conn => {
       conn.providers.delete(this)
       if (conn.providers.size === 0) {
         conn.destroy()
-        signalingConns.delete(this.roomName)
+        signalingConns.delete(conn.url)
       }
     })
     if (this.room) {
       this.room.disconnect()
     }
   }
+
   destroy () {
+    this.doc.off('destroy', this.destroy)
     // need to wait for key before deleting room
     this.key.then(() => {
       /** @type {Room} */ (this.room).destroy()
