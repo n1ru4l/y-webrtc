@@ -13,6 +13,11 @@ provider.on('synced', synced => {
   // Although this behavior might be subject to change.
   // It is better not to expect a synced event when using y-webrtc
   console.log('synced!', synced)
+  const yarray = ydoc.get('prosemirror', Y.XmlFragment)
+  ydoc.transact(() => {
+    const ymap = ydoc.getMap('test')
+    ymap.set(Math.random(), new Uint8Array(255000))
+  })
 })
 
 yarray.observeDeep(() => {
@@ -21,3 +26,5 @@ yarray.observeDeep(() => {
 
 // @ts-ignore
 window.example = { provider, ydoc, yarray }
+
+console.log(ydoc, ydoc.getMap('test'))
