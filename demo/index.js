@@ -7,7 +7,33 @@ const ydoc = new Y.Doc()
 const provider = new WebrtcProvider('prosemirror', ydoc)
 const fileElement = document.querySelector('#myFile')
 const imagesArray = ydoc.getArray('images')
-
+const syncProof = ydoc.getText('sync-proof')
+const hashWorker = new Worker('./hash-worker.js')
+const hashMap = new Map()
+hashWorker.onmessage = function (e) {
+  let {
+    uuid,
+    hash
+  } = e.data
+  let exist = hashMap.get(uuid)
+  if (!exist) hashMap.set(uuid, hash)
+  else {
+    // we're going to make this ugly
+    // if it's a string, set the new value
+    // if it's a function, call the function with the result
+    // so anyone can generate a uuid and get a return value
+    // to a callback
+    // if anyone extends this, just turn it into a promise setup
+    // by generating uuids to the worker
+    // and matching results from the message by uuid
+    if (isString(hash)) {
+      hashMap.set(uuid, hash)
+    } else if (isFunction(hash)) {
+      hash(e.data)
+      hashMap.delete(uuid, hash)
+    }
+  }
+}
 provider.on('peers', (events) => {
   for (const peerId of events.removed) {
     console.log(`removed:webrtc:[${peerId}]`)
@@ -36,6 +62,9 @@ ydoc.on('afterTransaction', (transaction, doc) => {
     createElement({ name, type, buffer })
   })
   */
+  calcProof().then(({ hash }) => {
+    console.log('calcProof', hash)
+  })
 })
 
 fileElement.onchange = async (event) => {
@@ -46,11 +75,16 @@ fileElement.onchange = async (event) => {
       return new Promise((resolve, reject) => {
         let reader = new FileReader()
         reader.onload = function (e) {
+          let buffer = new Uint8Array(reader.result)
+          let uuid = generateUuid()
           let fileModel = Object.entries({ // map from entries
             name: file.name,
             type: file.type,
-            buffer: new Uint8Array(reader.result)
+            uuid,
+            buffer
           })
+          let msg = { uuid, buffer }
+          hashWorker.postMessage(msg)
           resolve(fileModel)
         }
         reader.readAsArrayBuffer(file)
@@ -62,6 +96,31 @@ fileElement.onchange = async (event) => {
     })
   }
   fileElement.value = ''
+}
+const isFunction = (file) => {
+  return Object.prototype.toString.call(file) === '[object Function]'
+}
+function isString (s) {
+  return Object.prototype.toString.call(s) == '[object String]'
+}
+function calcProof () {
+  return new Promise((resolve, reject) => {
+    let hash = [...hashMap.entries()]
+      .filter(([k, v]) => isString(v))
+      .map(([k, v]) => v)
+      .sort() // we're ignoring the order of the keys. If you extend this, you'll want to perserve the order in the imagesArray
+      .join()
+    let uuid = generateUuid()
+    hashMap.set(uuid, resolve)
+    let msg = { uuid, buffer: hash }
+    hashWorker.postMessage(msg)
+  })
+}
+function generateUuid () {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    let r = Math.random()*16|0, v = c === 'x' ? r : ((r&0x3)|0x8)
+    return v.toString(16)
+  })
 }
 function chunkArray(array, size) {
   const chunkedArr = []
@@ -94,6 +153,8 @@ function createElement ({ name, type, buffer}) {
       // TODO: duplicates not supported
       if (name === image.get('name')) {
         console.log('REMOVE', image)
+        let uuid = image.get('uuid')
+        hashMap.delete(uuid)
         ydoc.transact(() => {
           imagesArray.delete(index, 1)
         })

@@ -113,7 +113,8 @@ class SimplePeerExtended extends Peer {
     } else if (this.txStatus === XSTATUS_HAVE_SYNC) {
       if (!this._txDocOnUpdate) {
         let fn = (msg) => {
-          this._channel.send(msg)
+          if (this._channel) this._channel.send(msg)
+          else this.destroy()
           // console.log('_txSend', this.txDoc.toJSON())
         }
         this._txDocOnUpdate = fn.bind(this)
