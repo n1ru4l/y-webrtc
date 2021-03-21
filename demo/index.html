@@ -3,9 +3,37 @@
 <head>
     <meta charset="utf-8"/>
     <title>y-webrtc demo</title>
+    <style>
+      img {
+        width:256px;
+        height:auto;
+      }
+      #images {
+        display: flex;
+      }
+      .container {
+        position: relative;
+      }
+      .remove-button {
+        position: absolute;
+        right: 0;
+        background-color:red;
+        color:white;
+      }
+    </style>
 </head>
 <body>
+  <input type="file"
+    id="myFile"
+    type="file"
+    name="filename"
+    accept="image/*"
+    multiple
+    disabled
+  >
   <button type="button" id="y-connect-btn">Disconnect</button>
+  <div id="images">
+  </div>
   <script type="text/javascript" src="../dist/demo.js"></script>
 </body>
 </html>

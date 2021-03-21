@@ -8,6 +8,7 @@ export const XSTATUS_HAVE_SYNC = 'ready'
 export const XSTATUS_PACKET_SYNC = 'packet-sync'
 export const XSTATUS_DELETE_SYNC = 'packet-delete'
 export const TX_SEND_TIMEOUT = 500
+export const TX_SEND_THROTTLE = 10
 
 const uInt8Concatenate = (array) => {
   let length = array
@@ -34,7 +35,6 @@ class SimplePeerExtended extends Peer {
     this._txOrdinal = 0
     this.rxDoc = new Y.Doc()
     this.rxStatus = XSTATUS_WAIT_SYNC
-    this._rxOrdinal = 0
     this.setupTypes()
 
     console.log(this)
@@ -49,6 +49,9 @@ class SimplePeerExtended extends Peer {
   }
   _txPacketsMap () {
     return this.txDoc.getMap('packets')
+  }
+  _rxRecievedArray () {
+    return this.rxDoc.getArray('received')
   }
   _rxPacketsMap () {
     return this.rxDoc.getMap('packets')
@@ -107,7 +110,6 @@ class SimplePeerExtended extends Peer {
       if (this._txQueue.length === 0) return 
       this.txDoc.transact(() => {
         let packet = this._txQueue.shift()
-        console.log(packet.chunk)
         let packetMap = new Y.Map(Object.entries(packet))
         let packets = this._txPacketsMap().get(packet.txOrd)
         if (packets) {
@@ -117,45 +119,56 @@ class SimplePeerExtended extends Peer {
           packets.push([packetMap])
           this._txPacketsMap().set(packet.txOrd, packets)
         }
-        this._txSend()
+        setTimeout(() => this._txSend(), TX_SEND_THROTTLE)
       })
     }
   }
-  rxDocOnUpdate (tr, doc) {
-    if (!tr.origin) return // ignore empty transactions
-    let { origin } = tr
-    for (const [ type, values ] of tr.changed.entries()) {
-      if (type === this._rxPacketsMap() && origin.status === XSTATUS_PACKET_SYNC) {
-        console.log('rxDocOnUpdate', type, values, tr)
-        this._rxProcessPackets({ type, values, transaction: tr })
-      }
+  rxDocOnUpdate ({ origin }, doc) {
+    if (origin && origin.status === XSTATUS_PACKET_SYNC) {
+      this._rxProcessPackets()
     }
   }
-  _rxProcessPackets ({ type, values, transaction }) {
+  _rxProcessPackets () {
     let rxCleanups = []
     let txCleanups = []
-    for (let txOrd of values.keys()) {
-      let packets = type.get(txOrd).toArray()
-      type.get(txOrd).observe((e, etx) => {
-        console.log(e, etc)
-      })
+    let txReceived = this._txRecievedArray().toArray()
+    let rxReceived = this._rxRecievedArray().toArray()
+    let rxPackets = this._rxPacketsMap()
+    let txOrdinals = [...rxPackets.keys()]
+    if (txOrdinals.length === 0) return
+    for (let txOrd of txOrdinals) {
+      let cleanRxFn = () => {
+        this._rxPacketsMap().delete(txOrd)
+        this._rxRecievedArray().push([txOrd])
+      }
+      let cleanTxFn = () => this._txRecievedArray().push([txOrd])
+      if (rxReceived.indexOf(txOrd) !== -1) {
+        rxCleanups.push(cleanRxFn)
+        txCleanups.push(cleanTxFn)
+        continue
+      }
+      let packets = rxPackets
+        .get(txOrd)
+        .toArray()
       if (!packets.length) continue // no packets
 
       let firstPacket = packets[0]
-
       if (parseInt(txOrd) !== firstPacket.get('txOrd')) continue // not a packet array [NOTE: keys come out as string]
-      let cleanRxFn = () => this._rxPacketsMap().delete(txOrd)
-      
+
+
       let totalSize = firstPacket.get('totalSize')
       if (totalSize === firstPacket.get('chunkSize')) {
-        console.log('chunklength:1', txOrd, packets)
         this.push(firstPacket.get('chunk'))
         rxCleanups.push(cleanRxFn)
+        txCleanups.push(cleanTxFn)
         continue
       }
       let totalLength = firstPacket.get('length')
-      console.log(txOrd, packets, firstPacket, totalLength < packets.length)
-      if (totalLength < packets.length) continue // not enough packets
+      if (totalLength < packets.length) {
+        type.observe((event, transaction) => {
+          console.log(event, transaction, type.get(txOrd).toArray())
+        })
+      } // not enough packets
 
       let indices = packets.map(p => p.get('index'))
       if (totalLength < new Set(indices).size) continue // not enough packets // duplicates
@@ -166,10 +179,16 @@ class SimplePeerExtended extends Peer {
           .sort(this.sortPacketArray)
           .map(p => p.get('chunk'))
         let data = uInt8Concatenate(buffers)
-        console.log('rx', buffers)
+        console.log('rx', data)
         this.push(data)
         rxCleanups.push(cleanRxFn)
+        txCleanups.push(cleanTxFn)
+        continue
       }
+      if (totalLength === new Set(indices).size) {
+        console.warn('FailedBufferOrSizeConversion', packets)
+      }
+
     }
     this.rxDoc.transact(() => {
       rxCleanups.map(fn => fn())
@@ -180,7 +199,6 @@ class SimplePeerExtended extends Peer {
   }
   _onChannelMessage (event) {
     let { data } = event
-    console.log(this.rxStatus, data)
     if (data instanceof ArrayBuffer) data = new Uint8Array(data)
     if (this.rxStatus === XSTATUS_WAIT_SYNC) {
       Y.applyUpdate(this.rxDoc, data, { status: XSTATUS_HAVE_SYNC })
@@ -192,10 +210,10 @@ class SimplePeerExtended extends Peer {
       this.txStatus = XSTATUS_HAVE_SYNC
     } else {
       if (!this._rxDocOnUpdate) {
-        let fn = (msg) => this._channel.send(msg)
         this._rxDocOnUpdate = this.rxDocOnUpdate.bind(this)
         this.rxDoc.on('afterTransaction', this._rxDocOnUpdate)
       }
+      console.log('_rxRecieve', this.rxDoc.toJSON())
       Y.applyUpdate(this.rxDoc, data, { status: XSTATUS_PACKET_SYNC })
     }
   }
