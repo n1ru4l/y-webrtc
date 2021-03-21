@@ -8,6 +8,15 @@ const provider = new WebrtcProvider('prosemirror', ydoc)
 const fileElement = document.querySelector('#myFile')
 const imagesArray = ydoc.getArray('images')
 
+provider.on('peers', (events) => {
+  for (const peerId of events.removed) {
+    console.log(`removed:webrtc:[${peerId}]`)
+  }
+  for (const peerId of events.added) {
+    console.log(`added:webrtc:[${peerId}]`)
+  }
+})
+
 provider.on('synced', synced => {
   // NOTE: This is only called when a different browser connects to this client
   // Windows of the same browser communicate directly with each other
@@ -19,8 +28,8 @@ provider.on('synced', synced => {
 ydoc.on('afterTransaction', (transaction, doc) => {
   // figure out when synced
   fileElement.disabled = false
-  console.log('doc', doc, transaction, doc.toJSON())
   /* TODO: figure out when the array is filled or just poll
+  console.log('doc', doc, transaction, doc.toJSON())
   imagesArray.forEach((image, index) => {
     // TODO: duplicates not supported
     let { name, type, buffer } = image.toJSON()
@@ -28,30 +37,52 @@ ydoc.on('afterTransaction', (transaction, doc) => {
   })
   */
 })
-fileElement.onchange = (event) => {
-  for (const file of fileElement.files) {
-    let reader = new FileReader()
-    reader.onload = function (e) {
-      console.log(file, e)
-      let fileModel = Object.entries({ // map from entries
-        name: file.name,
-        type: file.type,
-        buffer: new Uint8Array(reader.result)
+
+fileElement.onchange = async (event) => {
+  // chunk transactions to reduce load
+  let chunks = chunkArray([...fileElement.files], 10)
+  for (const chunk of chunks) {
+    let promises = chunk.map((file) => {
+      return new Promise((resolve, reject) => {
+        let reader = new FileReader()
+        reader.onload = function (e) {
+          let fileModel = Object.entries({ // map from entries
+            name: file.name,
+            type: file.type,
+            buffer: new Uint8Array(reader.result)
+          })
+          resolve(fileModel)
+        }
+        reader.readAsArrayBuffer(file)
       })
-      ydoc.transact(() => {
-        imagesArray.push([new Y.Map(fileModel)])
-      })
-    }
-    reader.readAsArrayBuffer(file)
+    })
+    let results = await Promise.all(promises)
+    ydoc.transact(() => {
+      results.map(f => imagesArray.push([new Y.Map(f)]))
+    })
   }
   fileElement.value = ''
 }
+function chunkArray(array, size) {
+  const chunkedArr = []
+  const totalSize = array.length || array.byteLength
+  let index = 0
+  while (index < totalSize) {
+    chunkedArr.push(array.slice(index, size + index))
+    index += size
+  }
+  return chunkedArr
+}
+function urlSafeSelector (value) {
+  return value.replace(/[!"#$%&'()*+,.\/:;<=>?@[\\\]^`{|}~]/g, "--")
+}
 function createElement ({ name, type, buffer}) {
   let imagesElem = document.querySelector('#images')
-  if (imagesElem.querySelector(`#image-${name}`)) return // exists
+  let imageName = urlSafeSelector(name)
+  if (imagesElem.querySelector(`#image-${imageName}`)) return // exists
   // image container and give id to find for deletion
   let containerElem = document.createElement('div')
-  containerElem.id = `image-${name}`
+  containerElem.id = `image-${imageName}`
   containerElem.classList.add('container')
 
   // create button to remove & delete image from YArray
@@ -82,7 +113,7 @@ function createElement ({ name, type, buffer}) {
 }
 function removeElement ({ name }) {
   // containers & elements
-  let containerElem = document.getElementById(`image-${name}`)
+  let containerElem = document.getElementById(`image-${urlSafeSelector(name)}`)
   let imageElem = containerElem.querySelector('img')
 
   // clean up on aisle browser
@@ -96,7 +127,7 @@ imagesArray.observe((event, transaction) => {
   // when files are added to array
   for (const change of changes.added.values()) {
     let { name, type, buffer } = change.content.type.toJSON()
-    createElement({ name, type, buffer })
+    setTimeout(() => createElement({ name, type, buffer }), 500)
   }
 
   // when files are deleted from array
