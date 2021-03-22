@@ -37,10 +37,10 @@ class SimplePeerExtended extends Peer {
     this._txOrdinal = 0
     this.rxDoc = new Y.Doc()
     this.rxStatus = XSTATUS_WAIT_SYNC
-    this.setupTypes()
+    this.setupBuffer()
     console.log(this)
   }
-  setupTypes () {
+  setupBuffer () {
     this._txReceivedArray()
     this._txPacketsMap()
     this._rxReceivedArray()
@@ -51,6 +51,12 @@ class SimplePeerExtended extends Peer {
       setTimeout(() => this._txSend(), TX_SEND_THROTTLE)
       // console.log('_txSend', this.txDoc.toJSON())
     }
+    this.on('connect', () => {
+      this._channel.addEventListener('bufferedamountlow', () => {
+        console.log('bufferedamountlow')
+        this._txSend()
+      })
+    })
     this._txDocOnUpdate = txSend.bind(this)
     this.txDoc.on('update', this._txDocOnUpdate)
   }
@@ -94,7 +100,7 @@ class SimplePeerExtended extends Peer {
     })
   }
   send (chunk) {
-    console.log('tx', chunk)
+    // console.log('tx', chunk)
     if (chunk instanceof ArrayBuffer) chunk = new Uint8Array(data)
     let chunks = this.packetArray(chunk, CHUNK_SIZE)
     this._txQueue = this._txQueue.concat(chunks)
@@ -107,6 +113,8 @@ class SimplePeerExtended extends Peer {
     })
   }
   _txSend () {
+    if (!this._channel) return this.destroy()
+    if (this._channel.bufferedAmount > MAX_BUFFERED_AMOUNT) return
     if (this.txStatus === XSTATUS_WAIT_SYNC) {
       let txDocState = Y.encodeStateAsUpdate(this.txDoc)
       this.txStatus = XSTATUS_SENT_SYNC
@@ -221,7 +229,7 @@ class SimplePeerExtended extends Peer {
         this._rxDocOnUpdate = this.rxDocOnUpdate.bind(this)
         this.rxDoc.on('afterTransaction', this._rxDocOnUpdate)
       }
-      console.log('_rxRecieve', this.rxDoc.toJSON())
+      // console.log('_rxRecieve', this.rxDoc.toJSON())
       Y.applyUpdate(this.rxDoc, data, { status: XSTATUS_PACKET_SYNC })
       this.emit('buffer-synced')
     }

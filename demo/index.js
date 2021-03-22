@@ -10,6 +10,42 @@ const imagesArray = ydoc.getArray('images')
 const syncProof = ydoc.getText('sync-proof')
 const hashWorker = new Worker('./hash-worker.js')
 const hashMap = new Map()
+imagesArray.observe((event, transaction) => {
+  // console.log('yarray updated: ', event, transaction)
+  let { changes } = event
+  // when files are added to array
+  for (const change of changes.added.values()) {
+    let { name, type, buffer, uuid } = change.content.type.toJSON()
+    console.log('ADDING', name, type)
+    createElement({ name, type, buffer, uuid })
+  }
+
+  // when files are deleted from array
+  for (const change of changes.deleted.values()) {
+    // Delete set has already completed, no data
+    // let { name, type, buffer, uuid } = change.content.type.toJSON()
+    // internal _map still contains the necessary data
+    // we could do all this in the onclick handler instead, but it won't trigger
+    // on other clients.
+    let uuid = change.content.type._map.get('uuid').content.arr[0]
+    removeElement({ uuid })
+  }
+})
+ydoc.on('afterTransaction', (transaction, doc) => {
+  // figure out when synced
+  fileElement.disabled = false
+  /* TODO: figure out when the array is filled or just poll
+  console.log('doc', doc, transaction, doc.toJSON())
+  imagesArray.forEach((image, index) => {
+    // TODO: duplicates not supported
+    let { name, type, buffer } = image.toJSON()
+    createElement({ name, type, buffer })
+  })
+  */
+  calcProof().then(({ hash }) => {
+    console.log('calcProof', hash)
+  })
+})
 hashWorker.onmessage = function (e) {
   let {
     uuid,
@@ -42,7 +78,6 @@ provider.on('peers', (events) => {
     console.log(`added:webrtc:[${peerId}]`)
   }
 })
-
 provider.on('synced', synced => {
   // NOTE: This is only called when a different browser connects to this client
   // Windows of the same browser communicate directly with each other
@@ -51,31 +86,16 @@ provider.on('synced', synced => {
   console.log('synced!', synced)
   fileElement.disabled = false
 })
-ydoc.on('afterTransaction', (transaction, doc) => {
-  // figure out when synced
-  fileElement.disabled = false
-  /* TODO: figure out when the array is filled or just poll
-  console.log('doc', doc, transaction, doc.toJSON())
-  imagesArray.forEach((image, index) => {
-    // TODO: duplicates not supported
-    let { name, type, buffer } = image.toJSON()
-    createElement({ name, type, buffer })
-  })
-  */
-  calcProof().then(({ hash }) => {
-    console.log('calcProof', hash)
-  })
-})
-
-fileElement.onchange = (event) => {
+fileElement.onchange = async (event) => {
   // chunk transactions to reduce load
-  let chunks = chunkArray([...fileElement.files], 10)
+  let chunks = chunkArray([...fileElement.files], 5)
+  let transactions = []
+  // process chunks into transactions
   let commit = async (r) => {
     ydoc.transact(() => {
       r.map(f => imagesArray.push([new Y.Map(f)]))
     })
   }
-  let transactions = []
   for (const chunk of chunks) {
     let promises = chunk.map((file) => {
       return new Promise((resolve, reject) => {
@@ -96,14 +116,16 @@ fileElement.onchange = (event) => {
         reader.readAsArrayBuffer(file)
       })
     })
-    transactions.push(Promise.all(promises))
+    transactions.push(promises)
   }
-  let tr = transactions.shift()
-  while (tr) {
-    tr.then(r => commit(r))
-    tr = transactions.shift()
+  for (const tr of transactions) {
+    let results = await Promise.all(tr)
+    commit(results)
   }
   fileElement.value = ''
+}
+function timeout(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 const isFunction = (file) => {
   return Object.prototype.toString.call(file) === '[object Function]'
@@ -190,27 +212,7 @@ function removeElement ({ uuid }) {
 
   containerElem.parentNode.removeChild(containerElem)
 }
-imagesArray.observe((event, transaction) => {
-  console.log('yarray updated: ', event, transaction)
-  let { changes } = event
-  // when files are added to array
-  for (const change of changes.added.values()) {
-    let { name, type, buffer, uuid } = change.content.type.toJSON()
-    console.log('ADDING', name, type)
-    createElement({ name, type, buffer, uuid })
-  }
 
-  // when files are deleted from array
-  for (const change of changes.deleted.values()) {
-    // Delete set has already completed, no data
-    // let { name, type, buffer } = change.content.type.toJSON()
-    // internal _map still contains the necessary data
-    // we could do all this in the onclick handler instead, but it won't trigger
-    // on other clients.
-    let name = change.content.type._map.get('uuid').content.arr[0]
-    removeElement({ uuid })
-  }
-})
 // @ts-ignore
 window.example = { provider, ydoc, imagesArray }
 
