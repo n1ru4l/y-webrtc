@@ -91,11 +91,6 @@ fileElement.onchange = async (event) => {
   let chunks = chunkArray([...fileElement.files], 5)
   let transactions = []
   // process chunks into transactions
-  let commit = async (r) => {
-    ydoc.transact(() => {
-      r.map(f => imagesArray.push([new Y.Map(f)]))
-    })
-  }
   for (const chunk of chunks) {
     let promises = chunk.map((file) => {
       return new Promise((resolve, reject) => {
@@ -118,10 +113,22 @@ fileElement.onchange = async (event) => {
     })
     transactions.push(promises)
   }
-  for (const tr of transactions) {
-    let results = await Promise.all(tr)
-    commit(results)
+  let commit = async (r) => {
+    ydoc.transact(() => {
+      r.map(f => imagesArray.push([new Y.Map(f)]))
+    })
   }
+  let functionProcessCommits = async () => {
+    let tr = transactions.shift()
+    if (tr) {
+      let results = await Promise.all(tr)
+      commit(results)
+    } else {
+      imagesArray.unobserve(functionProcessCommits)
+    }
+  }
+  imagesArray.observe(functionProcessCommits)
+  functionProcessCommits()
   fileElement.value = ''
 }
 function timeout(ms) {

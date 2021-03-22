@@ -107,14 +107,16 @@ class SimplePeerExtended extends Peer {
     this._txSend()
   }
   _txCleanup (txOrd) {
-    console.log('_txCleanup', txOrd, this._txPacketsMap().get(txOrd))
+    console.log('_txCleanup', txOrd, this._txPacketsMap().get(txOrd).toArray())
     return this.txDoc.transact(() => {
       this._txPacketsMap().delete(txOrd)
     })
   }
   _txSend () {
     if (!this._channel) return this.destroy()
-    if (this._channel.bufferedAmount > MAX_BUFFERED_AMOUNT) return
+    if (this._channel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+      return 
+    }
     if (this.txStatus === XSTATUS_WAIT_SYNC) {
       let txDocState = Y.encodeStateAsUpdate(this.txDoc)
       this.txStatus = XSTATUS_SENT_SYNC
@@ -164,11 +166,6 @@ class SimplePeerExtended extends Peer {
         this._rxReceivedArray().push([txOrd])
       }
       let cleanTxFn = () => this._txReceivedArray().push([txOrd])
-      if (rxReceived.indexOf(txOrd) !== -1) {
-        rxCleanups.push(cleanRxFn)
-        txCleanups.push(cleanTxFn)
-        continue
-      }
       let packets = rxPackets
         .get(txOrd)
         .toArray()
@@ -176,7 +173,6 @@ class SimplePeerExtended extends Peer {
 
       let firstPacket = packets[0]
       if (parseInt(txOrd) !== firstPacket.get('txOrd')) continue // not a packet array [NOTE: keys come out as string]
-
 
       let totalSize = firstPacket.get('totalSize')
       if (totalSize === firstPacket.get('chunkSize')) {
@@ -195,7 +191,7 @@ class SimplePeerExtended extends Peer {
           .sort(this.sortPacketArray)
           .map(p => p.get('chunk'))
         let data = uInt8Concatenate(buffers)
-        // console.log('rx', data)
+        console.log('rx', data)
         this.push(data)
         rxCleanups.push(cleanRxFn)
         txCleanups.push(cleanTxFn)
@@ -229,7 +225,7 @@ class SimplePeerExtended extends Peer {
         this._rxDocOnUpdate = this.rxDocOnUpdate.bind(this)
         this.rxDoc.on('afterTransaction', this._rxDocOnUpdate)
       }
-      // console.log('_rxRecieve', this.rxDoc.toJSON())
+      console.log('_rxRecieve', this.rxDoc.toJSON())
       Y.applyUpdate(this.rxDoc, data, { status: XSTATUS_PACKET_SYNC })
       this.emit('buffer-synced')
     }
