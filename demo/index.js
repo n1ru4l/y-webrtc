@@ -92,8 +92,8 @@ fileElement.onchange = async (event) => {
   let transactions = []
   // process chunks into transactions
   for (const chunk of chunks) {
-    let promises = chunk.map((file) => {
-      return new Promise((resolve, reject) => {
+    let promiseFns = chunk.map((file) => {
+      return () => new Promise((resolve, reject) => {
         let reader = new FileReader()
         reader.onload = function (e) {
           let buffer = new Uint8Array(reader.result)
@@ -105,13 +105,13 @@ fileElement.onchange = async (event) => {
             buffer
           })
           let msg = { uuid, buffer }
-          hashWorker.postMessage(msg)
+          // hashWorker.postMessage(msg)
           resolve(fileModel)
         }
         reader.readAsArrayBuffer(file)
       })
     })
-    transactions.push(promises)
+    transactions.push(promiseFns)
   }
   let commit = async (r) => {
     ydoc.transact(() => {
@@ -121,7 +121,7 @@ fileElement.onchange = async (event) => {
   let functionProcessCommits = async () => {
     let tr = transactions.shift()
     if (tr) {
-      let results = await Promise.all(tr)
+      let results = await Promise.all(tr.map(fn => fn()))
       commit(results)
     } else {
       imagesArray.unobserve(functionProcessCommits)

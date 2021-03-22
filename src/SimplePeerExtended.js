@@ -9,7 +9,7 @@ export const XSTATUS_PACKET_SYNC = 'packet-sync'
 export const XSTATUS_DELETE_SYNC = 'packet-delete'
 export const TX_SEND_TIMEOUT = 500
 export const TX_SEND_THROTTLE = 10
-export const TX_SEND_TTL = 1000 * 60 // 1 minute
+export const TX_SEND_TTL = 1000 * 30 // 30 seconds
 export const MAX_BUFFERED_AMOUNT = 64 * 1024 // simple peer value
 
 const uInt8Concatenate = (array) => {
@@ -48,12 +48,13 @@ class SimplePeerExtended extends Peer {
     let txSend = (msg) => {
       if (this._channel) this._channel.send(msg)
       else this.destroy()
-      setTimeout(() => this._txSend(), TX_SEND_THROTTLE)
+      if (this._channel.bufferedAmount < MAX_BUFFERED_AMOUNT) this._txSend()
       // console.log('_txSend', this.txDoc.toJSON())
     }
     this.on('connect', () => {
       this._channel.addEventListener('bufferedamountlow', () => {
         console.log('bufferedamountlow')
+        if (this._txQueue.length === 0) return
         this._txSend()
       })
     })
@@ -103,11 +104,29 @@ class SimplePeerExtended extends Peer {
     // console.log('tx', chunk)
     if (chunk instanceof ArrayBuffer) chunk = new Uint8Array(data)
     let chunks = this.packetArray(chunk, CHUNK_SIZE)
-    this._txQueue = this._txQueue.concat(chunks)
+    let transferFn = () => {
+      this.txDoc.transact(() => {
+        let packet = chunks.shift()
+        let packetMap = new Y.Map(Object.entries(packet))
+        let packets = this._txPacketsMap().get(packet.txOrd)
+        if (packets) {
+          packets.push([packetMap])
+        } else {
+          packets = new Y.Array()
+          packets.push([packetMap])
+          this._txPacketsMap().set(packet.txOrd, packets)
+        }
+        if (chunks.length === 0) {
+          setTimeout(() => this._txCleanup(packet.txOrd), TX_SEND_TTL)
+          this._txQueue = this._txQueue.filter(fn => fn !== transferFn)
+        }
+      })
+    } 
+    this._txQueue.push(transferFn)
     this._txSend()
   }
   _txCleanup (txOrd) {
-    console.log('_txCleanup', txOrd, this._txPacketsMap().get(txOrd).toArray())
+    console.log('_txCleanup', txOrd, this._txPacketsMap().get(txOrd).toArray().length)
     return this.txDoc.transact(() => {
       this._txPacketsMap().delete(txOrd)
     })
@@ -126,25 +145,7 @@ class SimplePeerExtended extends Peer {
       setTimeout(() => this._txSend(), TX_SEND_TIMEOUT)
     } else if (this.txStatus === XSTATUS_HAVE_SYNC) {
       if (this._txQueue.length === 0) return
-      this.txDoc.transact(() => {
-        let packet = this._txQueue.shift()
-        let packetMap = new Y.Map(Object.entries(packet))
-        let packets = this._txPacketsMap().get(packet.txOrd)
-        if (packets) {
-          packets.push([packetMap])
-        } else {
-          packets = new Y.Array()
-          packets.push([packetMap])
-          this._txPacketsMap().set(packet.txOrd, packets)
-        }
-        if (this._txQueue.length > 0) {
-          if (this._txQueue[0].txOrd > packet.txOrd) {
-            setTimeout(() => this._txCleanup(packet.txOrd), TX_SEND_TTL)
-          }
-        } else {
-          setTimeout(() => this._txCleanup(packet.txOrd), TX_SEND_TTL)
-        }
-      })
+      this._txQueue[0]()
     }
   }
   rxDocOnUpdate ({ origin }, doc) {
@@ -191,7 +192,7 @@ class SimplePeerExtended extends Peer {
           .sort(this.sortPacketArray)
           .map(p => p.get('chunk'))
         let data = uInt8Concatenate(buffers)
-        console.log('rx', data)
+        // console.log('rx', data)
         this.push(data)
         rxCleanups.push(cleanRxFn)
         txCleanups.push(cleanTxFn)
@@ -225,7 +226,7 @@ class SimplePeerExtended extends Peer {
         this._rxDocOnUpdate = this.rxDocOnUpdate.bind(this)
         this.rxDoc.on('afterTransaction', this._rxDocOnUpdate)
       }
-      console.log('_rxRecieve', this.rxDoc.toJSON())
+      // console.log('_rxRecieve', this.rxDoc.toJSON())
       Y.applyUpdate(this.rxDoc, data, { status: XSTATUS_PACKET_SYNC })
       this.emit('buffer-synced')
     }
