@@ -67,9 +67,15 @@ ydoc.on('afterTransaction', (transaction, doc) => {
   })
 })
 
-fileElement.onchange = async (event) => {
+fileElement.onchange = (event) => {
   // chunk transactions to reduce load
   let chunks = chunkArray([...fileElement.files], 10)
+  let commit = async (r) => {
+    ydoc.transact(() => {
+      r.map(f => imagesArray.push([new Y.Map(f)]))
+    })
+  }
+  let transactions = []
   for (const chunk of chunks) {
     let promises = chunk.map((file) => {
       return new Promise((resolve, reject) => {
@@ -90,10 +96,12 @@ fileElement.onchange = async (event) => {
         reader.readAsArrayBuffer(file)
       })
     })
-    let results = await Promise.all(promises)
-    ydoc.transact(() => {
-      results.map(f => imagesArray.push([new Y.Map(f)]))
-    })
+    transactions.push(Promise.all(promises))
+  }
+  let tr = transactions.shift()
+  while (tr) {
+    tr.then(r => commit(r))
+    tr = transactions.shift()
   }
   fileElement.value = ''
 }
@@ -133,15 +141,16 @@ function chunkArray(array, size) {
   return chunkedArr
 }
 function urlSafeSelector (value) {
-  return value.replace(/[!"#$%&'()*+,.\/:;<=>?@[\\\]^`{|}~]/g, "--")
+  return value.replace(/[!"#$%&'()*+,.\/:;<=>?@[\\\]^`{|}~]/g, "-").replace(' ','')
 }
-function createElement ({ name, type, buffer}) {
+function createElement ({ name, type, buffer, uuid }) {
   let imagesElem = document.querySelector('#images')
   let imageName = urlSafeSelector(name)
-  if (imagesElem.querySelector(`#image-${imageName}`)) return // exists
+  console.log(imageName)
+  if (imagesElem.querySelector(`#image-${uuid}`)) return // exists
   // image container and give id to find for deletion
   let containerElem = document.createElement('div')
-  containerElem.id = `image-${imageName}`
+  containerElem.id = `image-${uuid}`
   containerElem.classList.add('container')
 
   // create button to remove & delete image from YArray
@@ -150,8 +159,7 @@ function createElement ({ name, type, buffer}) {
   removeElem.classList.add("remove-button")
   removeElem.onclick = () => {
     imagesArray.forEach((image, index) => {
-      // TODO: duplicates not supported
-      if (name === image.get('name')) {
+      if (uuid === image.get('uuid')) {
         console.log('REMOVE', image)
         let uuid = image.get('uuid')
         hashMap.delete(uuid)
@@ -172,9 +180,9 @@ function createElement ({ name, type, buffer}) {
   containerElem.appendChild(removeElem)
   imagesElem.appendChild(containerElem)
 }
-function removeElement ({ name }) {
+function removeElement ({ uuid }) {
   // containers & elements
-  let containerElem = document.getElementById(`image-${urlSafeSelector(name)}`)
+  let containerElem = document.getElementById(`image-${uuid}`)
   let imageElem = containerElem.querySelector('img')
 
   // clean up on aisle browser
@@ -187,8 +195,9 @@ imagesArray.observe((event, transaction) => {
   let { changes } = event
   // when files are added to array
   for (const change of changes.added.values()) {
-    let { name, type, buffer } = change.content.type.toJSON()
-    setTimeout(() => createElement({ name, type, buffer }), 500)
+    let { name, type, buffer, uuid } = change.content.type.toJSON()
+    console.log('ADDING', name, type)
+    createElement({ name, type, buffer, uuid })
   }
 
   // when files are deleted from array
@@ -198,8 +207,8 @@ imagesArray.observe((event, transaction) => {
     // internal _map still contains the necessary data
     // we could do all this in the onclick handler instead, but it won't trigger
     // on other clients.
-    let name = change.content.type._map.get('name').content.arr[0]
-    removeElement({ name })
+    let name = change.content.type._map.get('uuid').content.arr[0]
+    removeElement({ uuid })
   }
 })
 // @ts-ignore
