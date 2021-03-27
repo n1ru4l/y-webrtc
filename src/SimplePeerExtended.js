@@ -31,6 +31,7 @@ class SimplePeerExtended extends Peer {
 
     this.txDoc = new Y.Doc()
     this.txStatus = XSTATUS_WAIT_SYNC
+    this._txPause = false
     this._txQueue = []
     this._txSent = []
     this._tx
@@ -39,6 +40,8 @@ class SimplePeerExtended extends Peer {
     this.rxStatus = XSTATUS_WAIT_SYNC
     this.setupBuffer()
     console.log(this)
+    this.webRTCMessageQueue = []
+    this.webRTCPaused = false
   }
   setupBuffer () {
     this._txReceivedArray()
@@ -46,37 +49,42 @@ class SimplePeerExtended extends Peer {
     this._rxReceivedArray()
     this._rxPacketsMap()
     let txSend = (msg) => {
-      if (this._channel) this._channel.send(msg)
-      else this.destroy()
-      if (this._channel.bufferedAmount < MAX_BUFFERED_AMOUNT) this._txSend()
-      // console.log('_txSend', this.txDoc.toJSON())
+      console.log('txSend:size', msg.byteLength)
+      this.webRTCMessageQueue.push(msg)
+      if (this.webRTCPaused) return
+      this.sendMessageQueued()
     }
-    this.on('connect', () => {
-      this._channel.addEventListener('bufferedamountlow', () => {
-        console.log('bufferedamountlow')
-        if (this._txQueue.length === 0) return
-        this._txSend()
-      })
-    })
     this._txDocOnUpdate = txSend.bind(this)
     this.txDoc.on('update', this._txDocOnUpdate)
   }
-  _txReceivedArray () {
-    return this.txDoc.getArray('received')
+  send (chunk) {
+    if (chunk instanceof ArrayBuffer) chunk = new Uint8Array(chunk)
+    let chunks = this.packetArray(chunk, CHUNK_SIZE)
+    this._txQueue = this._txQueue.concat(chunks)
+    this._txSend()
   }
-  _txPacketsMap () {
-    return this.txDoc.getMap('packets')
-  }
-  _rxReceivedArray () {
-    return this.rxDoc.getArray('received')
-  }
-  _rxPacketsMap () {
-    return this.rxDoc.getMap('packets')
-  }
-  sortPacketArray (a, b) {
-    return a.get('index') > b.get('index')
-      ? 1
-      : -1
+  sendMessageQueued () {
+    this.webRTCPaused = false
+    if (!this._channel) return setTimeout(() => this.sendMessageQueued(), TX_SEND_TIMEOUT)
+    let message = this.webRTCMessageQueue.shift()
+    while (message) {
+      if (this._channel.bufferedAmount && this._channel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+        this.webRTCPaused = true
+        this.webRTCMessageQueue.unshift(message)
+        const listener = () => {
+          this._channel.removeEventListener('bufferedamountlow', listener)
+          this.sendMessageQueued()
+        }
+        this._channel.addEventListener('bufferedamountlow', listener)
+        return
+      }
+      try {
+        super.send(message)
+        message = this.webRTCMessageQueue.shift()
+      } catch (error) {
+        console.warn(error)
+      }
+    }
   }
   packetArray (array, size) {
     const txOrd = this._txOrdinal
@@ -100,13 +108,23 @@ class SimplePeerExtended extends Peer {
       return packet
     })
   }
-  send (chunk) {
-    // console.log('tx', chunk)
-    if (chunk instanceof ArrayBuffer) chunk = new Uint8Array(data)
-    let chunks = this.packetArray(chunk, CHUNK_SIZE)
-    let transferFn = () => {
+  _txCleanup (txOrd) {
+    console.log('_txCleanup', txOrd, this._txPacketsMap().get(txOrd).toArray().length)
+    return this.txDoc.transact(() => {
+      this._txPacketsMap().delete(txOrd)
+    })
+  }
+  _txSend () {
+    if (this.txStatus === XSTATUS_WAIT_SYNC) {
+      let txDocState = Y.encodeStateAsUpdate(this.txDoc)
+      this.txStatus = XSTATUS_SENT_SYNC
+      super.send(txDocState)
+    } else if (this.txStatus === XSTATUS_SENT_SYNC) {
+      setTimeout(() => this._txSend(), TX_SEND_TIMEOUT)
+    } else if (this.txStatus === XSTATUS_HAVE_SYNC) {
+      if (this._txQueue.length === 0) return
       this.txDoc.transact(() => {
-        let packet = chunks.shift()
+        let packet = this._txQueue.shift()
         let packetMap = new Y.Map(Object.entries(packet))
         let packets = this._txPacketsMap().get(packet.txOrd)
         if (packets) {
@@ -116,36 +134,13 @@ class SimplePeerExtended extends Peer {
           packets.push([packetMap])
           this._txPacketsMap().set(packet.txOrd, packets)
         }
-        if (chunks.length === 0) {
-          setTimeout(() => this._txCleanup(packet.txOrd), TX_SEND_TTL)
-          this._txQueue = this._txQueue.filter(fn => fn !== transferFn)
+        if (this._txQueue.length > 0) {
+          if (this._txQueue[0].txOrd > packet.txOrd) {
+            setTimeout(() => this._txCleanup(packet.txOrd), TX_SEND_TTL)
+          }
+          setTimeout(() => this._txSend(), TX_SEND_THROTTLE)
         }
       })
-    } 
-    this._txQueue.push(transferFn)
-    this._txSend()
-  }
-  _txCleanup (txOrd) {
-    console.log('_txCleanup', txOrd, this._txPacketsMap().get(txOrd).toArray().length)
-    return this.txDoc.transact(() => {
-      this._txPacketsMap().delete(txOrd)
-    })
-  }
-  _txSend () {
-    if (!this._channel) return this.destroy()
-    if (this._channel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
-      return 
-    }
-    if (this.txStatus === XSTATUS_WAIT_SYNC) {
-      let txDocState = Y.encodeStateAsUpdate(this.txDoc)
-      this.txStatus = XSTATUS_SENT_SYNC
-      // console.log(this.txStatus, txDocState)
-      this._channel.send(txDocState)
-    } else if (this.txStatus === XSTATUS_SENT_SYNC) {
-      setTimeout(() => this._txSend(), TX_SEND_TIMEOUT)
-    } else if (this.txStatus === XSTATUS_HAVE_SYNC) {
-      if (this._txQueue.length === 0) return
-      this._txQueue[0]()
     }
   }
   rxDocOnUpdate ({ origin }, doc) {
@@ -201,7 +196,6 @@ class SimplePeerExtended extends Peer {
       if (totalLength === new Set(indices).size) {
         console.warn('FailedBufferOrSizeConversion', packets)
       }
-
     }
     this.rxDoc.transact(() => {
       rxCleanups.map(fn => fn())
@@ -212,6 +206,7 @@ class SimplePeerExtended extends Peer {
   }
   _onChannelMessage (event) {
     let { data } = event
+    console.log('rx', data.byteLength)
     if (data instanceof ArrayBuffer) data = new Uint8Array(data)
     if (this.rxStatus === XSTATUS_WAIT_SYNC) {
       Y.applyUpdate(this.rxDoc, data, { status: XSTATUS_HAVE_SYNC })
@@ -226,10 +221,26 @@ class SimplePeerExtended extends Peer {
         this._rxDocOnUpdate = this.rxDocOnUpdate.bind(this)
         this.rxDoc.on('afterTransaction', this._rxDocOnUpdate)
       }
-      // console.log('_rxRecieve', this.rxDoc.toJSON())
       Y.applyUpdate(this.rxDoc, data, { status: XSTATUS_PACKET_SYNC })
       this.emit('buffer-synced')
     }
+  }
+  _txReceivedArray () {
+    return this.txDoc.getArray('received')
+  }
+  _txPacketsMap () {
+    return this.txDoc.getMap('packets')
+  }
+  _rxReceivedArray () {
+    return this.rxDoc.getArray('received')
+  }
+  _rxPacketsMap () {
+    return this.rxDoc.getMap('packets')
+  }
+  sortPacketArray (a, b) {
+    return a.get('index') > b.get('index')
+      ? 1
+      : -1
   }
   /* SimplePeer functions for reference
   send (chunk) {
