@@ -88,7 +88,9 @@ provider.on('synced', synced => {
 })
 fileElement.onchange = async (event) => {
   // chunk transactions to reduce load
-  let chunks = chunkArray([...fileElement.files], 5)
+  let files = [...fileElement.files]
+  document.getElementById('file-count').textContent = files.length
+  let chunks = chunkArray(files, 5)
   let transactions = []
   // process chunks into transactions
   for (const chunk of chunks) {
@@ -115,7 +117,9 @@ fileElement.onchange = async (event) => {
   }
   let commit = async (r) => {
     ydoc.transact(() => {
-      r.map(f => imagesArray.push([new Y.Map(f)]))
+      for (const f of r) {
+        imagesArray.push([new Y.Map(f)])
+      }
     })
   }
   let functionProcessCommits = async () => {
@@ -173,6 +177,7 @@ function urlSafeSelector (value) {
   return value.replace(/[!"#$%&'()*+,.\/:;<=>?@[\\\]^`{|}~]/g, "-").replace(' ','')
 }
 function createElement ({ name, type, buffer, uuid }) {
+  document.getElementById('load-count').textContent = parseInt(document.getElementById('load-count').textContent) + 1
   let imagesElem = document.querySelector('#images')
   let imageName = urlSafeSelector(name)
   if (imagesElem.querySelector(`#image-${uuid}`)) return // exists
@@ -217,6 +222,7 @@ function removeElement ({ uuid }) {
   URL.revokeObjectURL(imageElem.src)
 
   containerElem.parentNode.removeChild(containerElem)
+  document.getElementById('load-count').textContent = parseInt(document.getElementById('load-count').textContent) - 1
 }
 
 // @ts-ignore

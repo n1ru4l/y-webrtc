@@ -25,9 +25,17 @@
         background-color:red;
         color:white;
       }
+      #count {
+        position: absolute;
+        right: 0;
+      }
     </style>
 </head>
-<body>
+<body class="container">
+  <div id="count">
+    FILES: <span id="file-count">-</span>
+    LOADED: <span id="load-count">0</span>
+  </div>
   <input type="file"
     id="myFile"
     type="file"
