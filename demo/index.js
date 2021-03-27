@@ -175,7 +175,6 @@ function urlSafeSelector (value) {
 function createElement ({ name, type, buffer, uuid }) {
   let imagesElem = document.querySelector('#images')
   let imageName = urlSafeSelector(name)
-  console.log(imageName)
   if (imagesElem.querySelector(`#image-${uuid}`)) return // exists
   // image container and give id to find for deletion
   let containerElem = document.createElement('div')
