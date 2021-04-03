@@ -52,7 +52,7 @@
   "dependencies": {
     "lib0": "^0.2.34",
     "simple-peer": "^9.9.3",
-    "y-protocols": "^1.0.1"
+    "y-protocols": "^1.0.4"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^11.1.0",
@@ -65,10 +65,10 @@
     "rollup-plugin-terser": "^5.3.1",
     "standard": "^14.3.4",
     "typescript": "^3.9.7",
-    "yjs": "^13.4.6"
+    "yjs": "^13.5.2"
   },
   "peerDependenies": {
-    "yjs": "^13.4.6"
+    "yjs": "^13.5.2"
   },
   "optionalDependencies": {
     "ws": "^7.2.0"
