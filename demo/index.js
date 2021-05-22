@@ -4,7 +4,8 @@ import * as Y from 'yjs'
 import { WebrtcProvider } from '../src/y-webrtc.js'
 
 const ydoc = new Y.Doc()
-const provider = new WebrtcProvider('prosemirror', ydoc)
+const provider = new WebrtcProvider('webrtc-test', ydoc, { signaling: ['ws://localhost:4444'] })
+const yarray = ydoc.getArray()
 const fileElement = document.querySelector('#myFile')
 const imagesArray = ydoc.getArray('images')
 const syncProof = ydoc.getText('sync-proof')
